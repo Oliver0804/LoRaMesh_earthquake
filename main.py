@@ -8,6 +8,7 @@ import requests
 import mysql.connector
 from mysql.connector import Error
         
+debugMode = False
 
 def connect_db():
     try:
@@ -63,7 +64,8 @@ def save_last_origin_times(origin_times):
 
 
 def save_last_origin_times_db(connection, last_origin_times_small,last_origin_times_all):
-    print(" 保存起源时间到数据库...")
+    if debugMode:
+        print(" 保存起源时间到数据库...")
     if connection is not None:
         try:
             cursor = connection.cursor()
@@ -90,7 +92,8 @@ def save_last_origin_times_db(connection, last_origin_times_small,last_origin_ti
         print("No database connection available.")
 
 def read_last_origin_time_db(connection):
-    print(" 从数据库读取起源时间...")
+    if debugMode:
+        print(" 从数据库读取起源时间...")
     if connection is not None:
         try:
             cursor = connection.cursor()
@@ -127,10 +130,12 @@ def fetch_earthquake_data(url, last_origin_time, config):
             earthquake = data['records']['Earthquake'][0]
             current_origin_time = earthquake['EarthquakeInfo']['OriginTime']
             if current_origin_time != last_origin_time:
-                print_earthquake_details(earthquake)
+                if debugMode:
+                    print_earthquake_details(earthquake)
                 return current_origin_time, earthquake
             else:
-                print(f"{url}最近一次獲取時間:", datetime.now())
+                if debugMode:
+                    print(f"{url}最近一次獲取時間:", datetime.now())
         else:
             print("Failed to retrieve data:", data['message'])
     else:
@@ -176,8 +181,8 @@ def main():
             last_small_time = str(last_small_time)
             last_all_time = str(last_all_time)
 
-            small_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0016-001"
-            all_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0015-001"
+            small_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0016-002"
+            all_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0015-002"
             
 
             #取得最近一次的發生時間
@@ -187,28 +192,31 @@ def main():
             #save_last_origin_times_db(db_connection, origin_times)
 
             updated = False
-            print("===============================")
-            print(f"db_small_time: {last_small_time}")
-            print(f"db_all_time: {last_all_time}")
-            print(f"new_origin_time_small:{new_origin_time_small}")
-            print(f"new_origin_time_all:{new_origin_time_all}")
-            print("===============================")
+            if debugMode:
+                print("===============================")
+                print(f"db_small_time: {last_small_time}")
+                print(f"db_all_time: {last_all_time}")
+                print(f"new_origin_time_small:{new_origin_time_small}")
+                print(f"new_origin_time_all:{new_origin_time_all}")
+                print("===============================")
 
             if new_origin_time_small != last_small_time:
-                print("發現變化small_time")
+                if debugMode:
+                    print("發現變化small_time")
                 last_small_time = new_origin_time_small
                 updated = True
                 if earthquake_small and earthquake_small['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeValue'] > config['magnitude_threshold']:
                     print("Small Region", earthquake_small['ReportContent'])
-                    #send_meshtastic_message("Small Region", earthquake_small['ReportContent'])
+                    send_meshtastic_message("Small Region", earthquake_small['ReportContent'])
             
             if new_origin_time_all != last_all_time:
-                print("發現變化all_time")
+                if debugMode:
+                    print("發現變化all_time")
                 last_all_time = new_origin_time_all
                 updated = True
                 if earthquake_all and earthquake_all['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeValue'] > config['magnitude_threshold']:
                     print("All Regions", earthquake_all['ReportContent'])
-                    #send_meshtastic_message("All Regions", earthquake_all['ReportContent'])
+                    send_meshtastic_message("All Regions", earthquake_all['ReportContent'])
             
             if updated:
                 # 将时间更新保存到数据库
@@ -216,10 +224,11 @@ def main():
                 save_last_origin_times_db(db_connection,last_small_time ,last_all_time)
 
             else:
-                print(f"Small Region last origin time: {origin_times['small']}")
-                print(f"All Regions last origin time: {origin_times['all']}")
+                if debugMode:
+                    print(f"Small Region last origin time: {origin_times['small']}")
+                    print(f"All Regions last origin time: {origin_times['all']}")
             
-            time.sleep(2)
+            time.sleep(0.5)
     except KeyboardInterrupt:
         print("Program terminated by user.")
     finally:
