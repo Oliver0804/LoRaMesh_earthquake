@@ -23,7 +23,7 @@ WantedBy=multi-user.target
 ```
 systemctl enable earthquake.service
 systemctl start earthquake.service
-
+systemctl stop earthquake.service
 systemctl status earthquake.service
 ```
 
