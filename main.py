@@ -229,7 +229,7 @@ def format_forecast(forecast_summary):
     """Formats the extracted forecast information into a specified string format."""
     formatted_forecasts = []
     for location, data in forecast_summary.items():
-        formatted_forecast = f"72HR天氣預報{location}溫度{data['MinT']}~{data['MaxT']}度,降雨機率{data['PoP']}%：{data['CI']}"
+        formatted_forecast = f"近三日天氣預報{location}溫度{data['MinT']}~{data['MaxT']}度,降雨機率{data['PoP']}%：{data['CI']}"
         formatted_forecasts.append(formatted_forecast)
     return formatted_forecasts
 
