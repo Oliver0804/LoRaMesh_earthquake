@@ -2,18 +2,55 @@
 import time
 import os
 import json
-from datetime import datetime
-
-
+from datetime import datetime, timedelta
 import requests
 import mysql.connector
 from mysql.connector import Error
-        
+from colorama import Fore, Style
+import logging
+import requests
+from requests.models import PreparedRequest
+
 debugMode = True
 
+# 設置log文件記錄
+log_dir = "./logs"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, datetime.now().strftime("%Y-%m-%d") + ".log")
+
+# Initialize logging for errors and database interactions only
+logging.basicConfig(
+    filename=log_file,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+def print_earthquake_details(earthquake):
+    print(f"{Fore.CYAN}Earthquake Number: {earthquake['EarthquakeNo']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Report Type: {earthquake['ReportType']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Report Color: {earthquake['ReportColor']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Report Content: {earthquake['ReportContent']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Origin Time: {earthquake['EarthquakeInfo']['OriginTime']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Source: {earthquake['EarthquakeInfo']['Source']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Focal Depth: {earthquake['EarthquakeInfo']['FocalDepth']} km{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Epicenter Location: {earthquake['EarthquakeInfo']['Epicenter']['Location']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Epicenter Latitude: {earthquake['EarthquakeInfo']['Epicenter']['EpicenterLatitude']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Epicenter Longitude: {earthquake['EarthquakeInfo']['Epicenter']['EpicenterLongitude']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Magnitude Type: {earthquake['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeType']}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Magnitude Value: {earthquake['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeValue']}{Style.RESET_ALL}")
+
+def clean_old_logs(log_dir, days=7):
+    for filename in os.listdir(log_dir):
+        file_path = os.path.join(log_dir, filename)
+        if os.path.isfile(file_path):
+            file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+            if datetime.now() - file_mtime > timedelta(days=days):
+                os.remove(file_path)
+                logging.info(f"Deleted old log file: {filename}")
+
 def connect_db(config):
+    print(f"{Fore.YELLOW}正在嘗試連接到數據庫...{Style.RESET_ALL}")
     try:
-        print("正在嘗試連接到數據庫...")
         connection = mysql.connector.connect(
             host=config['db_host'],
             user=config['db_user'],
@@ -22,40 +59,34 @@ def connect_db(config):
         )
         if connection.is_connected():
             db_info = connection.get_server_info()
-            print(f"成功連接到 MySQL 數據庫，MySQL 服務器版本：{db_info}")
+            print(f"{Fore.GREEN}成功連接到 MySQL 數據庫，MySQL 服務器版本：{db_info}{Style.RESET_ALL}")
             return connection
     except Error as e:
-        print(f"數據庫連接失敗：{e}")
+        print(f"{Fore.RED}數據庫連接失敗：{e}{Style.RESET_ALL}")
         return None
-        
 
 def load_config():
     config_path = './config.json'
-    default_config = {
-        "Authorization": "Your_Default_Authorization_Key",
-        "limit": 1,
-        "offset": 0,
-        "format": "JSON",
-        "magnitude_threshold": 1
-    }
     try:
         with open(config_path, 'r') as file:
             config = json.load(file)
-            print("成功載入配置文件。")
+            print(f"{Fore.GREEN}成功載入配置文件。{Style.RESET_ALL}")
             return config
     except FileNotFoundError:
-        print("配置文件未找到，使用預設設定。")
-        # Create the default config file if it doesn't exist
+        print(f"{Fore.YELLOW}配置文件未找到，使用預設設定。{Style.RESET_ALL}")
+        default_config = {
+            "Authorization": "Your_Default_Authorization_Key",
+            "limit": 1,
+            "offset": 0,
+            "format": "JSON",
+            "magnitude_threshold": 1
+        }
         with open(config_path, 'w') as file:
             json.dump(default_config, file)
-            print("已創建預設配置文件。")
+            print(f"{Fore.GREEN}已創建預設配置文件。{Style.RESET_ALL}")
         return default_config
 
-
-
 def save_last_origin_times_db(connection, last_origin_times_small, last_origin_times_all, last_issue_time_weather):
-    if debugMode:
-        print("保存起源时间到数据库...")
     if connection is not None:
         try:
             cursor = connection.cursor()
@@ -65,46 +96,37 @@ def save_last_origin_times_db(connection, last_origin_times_small, last_origin_t
             last_origin_time = VALUES(last_origin_time), 
             last_checked_time = VALUES(last_checked_time);
             """
-            current_time = datetime.now()  # 获取当前时间
-
-            # 更新 small 类型的地震时间
+            current_time = datetime.now()
             cursor.execute(update_query, ('small', last_origin_times_small, current_time))
-            # 更新 all 类型的地震时间
             cursor.execute(update_query, ('all', last_origin_times_all, current_time))
-            # 更新天气时间
             cursor.execute(update_query, ('weather', last_issue_time_weather, current_time))
-
             connection.commit()
-            print("Origin times updated in SQL.")
+            logging.info("Origin times updated in SQL.")
         except Error as e:
-            print(f"Failed to update origin times in SQL: {e}")
+            logging.error(f"Failed to update origin times in SQL: {e}")
         finally:
             cursor.close()
     else:
-        print("No database always available.")
-
+        print(f"{Fore.RED}No database connection available.{Style.RESET_ALL}")
 
 def read_last_origin_time_db(connection):
-    if debugMode:
-        print(" 从数据库读取起源时间...")
     if connection is not None:
         try:
             cursor = connection.cursor()
-            select_query = "SELECT type, last_origin_time FROM origin_times;"  # 只选择需要的字段
+            select_query = "SELECT type, last_origin_time FROM origin_times;"
             cursor.execute(select_query)
             origin_times = {}
-            for (type, last_origin_time) in cursor:  # 在这里只解包两个字段
+            for (type, last_origin_time) in cursor:
                 origin_times[type] = last_origin_time
-            print("Origin times read from SQL.")
-            print(origin_times)
+            print(f"{Fore.GREEN}Origin times read from SQL.{Style.RESET_ALL}")
             return origin_times
         except Error as e:
-            print(f"Failed to read origin times from SQL: {e}")
+            print(f"{Fore.RED}Failed to read origin times from SQL: {e}{Style.RESET_ALL}")
         finally:
             cursor.close()
-            connection.commit()  # 提交事务
+            connection.commit()
     else:
-        print("No database connection available.")
+        print(f"{Fore.RED}No database connection available.{Style.RESET_ALL}")
         return None
 
 def fetch_earthquake_data(url, last_origin_time, config):
@@ -115,7 +137,6 @@ def fetch_earthquake_data(url, last_origin_time, config):
         'format': config['format']
     }
     headers = {'accept': 'application/json'}
-
     response = requests.get(url, headers=headers, params=params)
     if response.status_code == 200:
         data = response.json()
@@ -123,89 +144,101 @@ def fetch_earthquake_data(url, last_origin_time, config):
             earthquake = data['records']['Earthquake'][0]
             current_origin_time = earthquake['EarthquakeInfo']['OriginTime']
             if current_origin_time != last_origin_time:
-                if debugMode:
-                    print_earthquake_details(earthquake)
+                print_earthquake_details(earthquake)
                 return current_origin_time, earthquake
             else:
-                if debugMode:
-                    print(f"{url}最近一次獲取時間:", datetime.now())
+                print(f"{Fore.CYAN}{url} 最近一次獲取時間: {datetime.now()}{Style.RESET_ALL}")
         else:
-            print("Failed to retrieve data:", data['message'])
+            print(f"{Fore.RED}Failed to retrieve data: {data['message']}{Style.RESET_ALL}")
     else:
-        print("HTTP Error:", response.status_code)
+        print(f"{Fore.RED}HTTP Error: {response.status_code}{Style.RESET_ALL}")
     return last_origin_time, None
 
+def send_meshtastic_message(tip_msg, report_content):
+    command = f'meshtastic --sendtext "[{tip_msg}] {report_content}" --ch-index 2'
+    result = os.system(command)
+    if result == 0:
+        logging.info(f"Meshtastic message sent: {tip_msg}")
+        print(f"{Fore.GREEN}Meshtastic message sent: {tip_msg}{Style.RESET_ALL}")
+    else:
+        logging.error("Failed to send Meshtastic message")
+        print(f"{Fore.RED}Failed to send Meshtastic message{Style.RESET_ALL}")
 
-# def fetch_weather_data(url, last_issue_time, config):
-#     params = {
-#         'Authorization': config['Authorization'],
-#         'limit': config['limit'],
-#         'offset': config['offset'],
-#         'format': config['format']
-#     }
-#     headers = {'accept': 'application/json'}
-#     print("===========")
-#     print(params)
-#     print("===========")
 
-#     response = requests.get(url, headers=headers, params=params)
-#     if response.status_code == 200:
-#         data = response.json()
-#         if data['success']:
-#             record = data['records']['record'][0]  # 取出第一条记录
-#             current_issue_time = record['datasetInfo']['issueTime']
-#             if current_issue_time != last_issue_time:
-#                 content_text = record['contents']['content']['contentText'].strip().replace('\n', ' ')
-#                 if debugMode:
-#                     print_weather_details(record)
-#                 return current_issue_time, content_text  # Correct variable name here
-#             else:
-#                 if debugMode:
-#                     print(f"{url} 最近一次获取时间:", datetime.now())
-#         else:
-#             print("Failed to retrieve weather data:", data['message'])
-#     else:
-#         print("HTTP Error:", response.status_code)
-#     return last_issue_time, None
+def format_forecast(forecast_summary):
+    """Formats the extracted forecast information into a specified string format."""
+    # 獲取今天的日期和三天後的日期
+    today_date = datetime.now().date()
+    three_days_later = today_date + timedelta(days=3)
 
-def fetch_weather_data(url, retries=3):
+    formatted_forecasts = []
+    for location, data in forecast_summary.items():
+        # 格式化日期範圍
+        date_range = f"{today_date.strftime('%m/%d')}～{three_days_later.strftime('%m/%d')}"
+        formatted_forecast = f"{date_range} 天氣預報{location}溫度{data['MinT']}~{data['MaxT']}度,降雨機率{data['PoP']}%：{data['CI']}"
+        formatted_forecasts.append(formatted_forecast)
+    return formatted_forecasts
+
+def print_request_details(url, headers, params):
+    """Utility function to print the full URL and headers of a request."""
+    req = PreparedRequest()
+    req.prepare_url(url, params)
+    req.prepare_headers(headers)
+
+    print("Request URL:", req.url)
+    print("Request Headers:", req.headers)
+    print("Request Params:", params)
+
+
+def fetch_weather_data(config):
+    """Fetches weather data from the specified URL with retries for handling request failures."""
+    base_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
+    params = {
+        'Authorization': config['Authorization'],
+        'limit': 5,
+        'offset': config['offset'],
+        'format': 'JSON',
+        'locationName': '花蓮縣,澎湖縣,臺北市,臺中市,高雄市'
+    }
+    headers = {'accept': 'application/json'}
+
+    # Print the request details before sending
+    print_request_details(base_url, headers, params)
+
+    retries = 3
     while retries > 0:
-        response = requests.get(url)
+        response = requests.get(base_url, headers=headers, params=params)
         if response.status_code == 200:
             data = response.json()
             if data.get('success') == 'true':
-                return data['records']  # 返回解析好的记录部分
+                return data['records']
             else:
-                print("Failed to retrieve data:", data.get('message'))
+                print(f"Failed to retrieve data: {data.get('message')}")
         else:
-            print("HTTP Error:", response.status_code)
+            print(f"HTTP Error: {response.status_code}")
+
         retries -= 1
         print(f"Retrying... {retries} attempts left.")
-    return None  # 如果尝试用完仍然失败，返回 None
+        time.sleep(5)
 
-# def parse_weather_data(records):
-#     """Parses the weather data to extract and structure forecast information."""
-#     forecast_summary = []
-#     for location in records['location']:
-#         location_name = location['locationName']
-#         for element in location['weatherElement']:
-#             element_name = element['elementName']  # 修正了此处的键名
-#             for period in element['time']:
-#                 start_time = period['startTime']
-#                 end_time = period['endTime']
-#                 parameter = period.get('parameter', {})
-#                 forecast_summary.append({
-#                     'location': location_name,
-#                     'element': element_name,
-#                     'start_time': start_time,
-#                     'end_time': end_time,
-#                     'parameter_name': parameter.get('parameterName', ''),
-#                     'parameter_value': parameter.get('parameterValue', '')
-#                 })
-#     return forecast_summary
+    print("Failed to retrieve data after multiple attempts.")
+    return None
+
+
 def parse_weather_data(records):
-    """Parses the weather data to extract structured forecast information."""
+    """Parses the weather data from API response and provides detailed insights.
+    
+    Args:
+        records (dict): The 'records' part of the JSON response containing weather data.
+
+    Returns:
+        dict: A dictionary with location names as keys and their weather details as values.
+    """
     forecast_summary = {}
+    total_locations = len(records['location'])
+    print(f"Total locations processed: {total_locations}")
+
+    # Loop through each location to extract weather details
     for location in records['location']:
         location_name = location['locationName']
         forecast_summary[location_name] = {
@@ -214,115 +247,73 @@ def parse_weather_data(records):
             'PoP': None,
             'CI': None
         }
-        # 循环通过天气要素来寻找最高温、最低温、降雨机率和舒适度
+        print(f"\nProcessing weather data for {location_name}:")
+        
+        # Extract and display each relevant weather element
         for element in location['weatherElement']:
             element_name = element['elementName']
             if element_name in ['MaxT', 'MinT', 'PoP', 'CI']:
-                # 取每个要素的最后一个时间段的参数值
-                last_period = element['time'][-1]  # 取最后一段时间
+                last_period = element['time'][-1]
                 parameter = last_period['parameter']
-                forecast_summary[location_name][element_name] = parameter.get('parameterValue', parameter.get('parameterName', ''))
-    
+                value = parameter.get('parameterValue', parameter.get('parameterName', ''))
+                forecast_summary[location_name][element_name] = value
+                
+                # Display detailed weather information for the current element
+                print(f"  {element_name}: {value}")
+
+    print(f"\nTotal data entries processed: {len(forecast_summary)}")
     return forecast_summary
 
-def format_forecast(forecast_summary):
-    """Formats the extracted forecast information into a specified string format."""
-    formatted_forecasts = []
-    for location, data in forecast_summary.items():
-        formatted_forecast = f"近三日天氣預報{location}溫度{data['MinT']}~{data['MaxT']}度,降雨機率{data['PoP']}%：{data['CI']}"
-        formatted_forecasts.append(formatted_forecast)
-    return formatted_forecasts
-
-def print_forecast(forecast):
-    for item in forecast:
-        print(f"{item['location']}: {item['element']} from {item['start_time']} to {item['end_time']}, {item['parameter_name']} {item['parameter_value']}")
-
-
-def print_earthquake_details(earthquake):
-    print("Earthquake Number:", earthquake['EarthquakeNo'])
-    print("Report Type:", earthquake['ReportType'])
-    print("Report Color:", earthquake['ReportColor'])
-    print("Report Content:", earthquake['ReportContent'])
-    print("Origin Time:", earthquake['EarthquakeInfo']['OriginTime'])
-    print("Source:", earthquake['EarthquakeInfo']['Source'])
-    print("Focal Depth:", earthquake['EarthquakeInfo']['FocalDepth'], "km")
-    print("Epicenter Location:", earthquake['EarthquakeInfo']['Epicenter']['Location'])
-    print("Epicenter Latitude:", earthquake['EarthquakeInfo']['Epicenter']['EpicenterLatitude'])
-    print("Epicenter Longitude:", earthquake['EarthquakeInfo']['Epicenter']['EpicenterLongitude'])
-    print("Magnitude Type:", earthquake['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeType'])
-    print("Magnitude Value:", earthquake['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeValue'])
-
-
-def print_weather_details(record):
-    print("Issue Time:", record['datasetInfo']['issueTime'])
-    print("Start Time:", record['datasetInfo']['validTime']['startTime'])
-    print("End Time:", record['datasetInfo']['validTime']['endTime'])
-    print("Content Text:", record['contents']['content']['contentText'].strip().replace('\n', ' '))
-
-def send_meshtastic_message(tip_msg, report_content):
-    command = f'meshtastic --sendtext "[{tip_msg}] {report_content}" --ch-index 2'
-    os.system(command)
-    print(f"Meshtastic message sent: {tip_msg}")
-
 def main():
+    clean_old_logs(log_dir)
     config = load_config()
     db_connection = connect_db(config)
-    last_run_day = None  # 用于跟踪上次运行更新的日期
+    last_run_day = None
 
     try:
         while True:
             current_time = datetime.now()
             today_date = current_time.date()
             if db_connection is None or not db_connection.is_connected():
-                print("数据库连接丢失，尝试重新连接...")
+                print(f"{Fore.YELLOW}数据库连接丢失，尝试重新连接...{Style.RESET_ALL}")
                 db_connection = connect_db(config)
                 if db_connection is None or not db_connection.is_connected():
-                    print("重新连接失败，稍后再试...")
-                    time.sleep(10)  # 等待10秒后再次尝试
+                    print(f"{Fore.RED}重新连接失败，稍后再试...{Style.RESET_ALL}")
+                    time.sleep(10)
                     continue
-            
+
             origin_times = read_last_origin_time_db(db_connection)
             if origin_times is not None:
                 last_small_time = str(origin_times.get('small', ''))
                 last_all_time = str(origin_times.get('all', ''))
-                last_weather_time = str(origin_times.get('weather', ''))  # Ensure this matches the database key
+                last_weather_time = str(origin_times.get('weather', ''))
 
             small_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0016-001"
             all_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0015-001"
-            #weather_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/W-C0033-002"
 
             new_origin_time_small, earthquake_small = fetch_earthquake_data(small_url, last_small_time, config)
             new_origin_time_all, earthquake_all = fetch_earthquake_data(all_url, last_all_time, config)
-            #new_weather_time, weather_content = fetch_weather_data(weather_url, last_weather_time, config)  # Correct function call
-
 
             updated = False
             if new_origin_time_small != last_small_time:
-                print("Small Region Update Detected")
+                print(f"{Fore.GREEN}Small Region Update Detected{Style.RESET_ALL}")
                 last_small_time = new_origin_time_small
                 updated = True
                 if earthquake_small and earthquake_small['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeValue'] > config['magnitude_threshold']:
-                    print("Small Region", earthquake_small['ReportContent'])
+                    print(f"{Fore.GREEN}Small Region: {earthquake_small['ReportContent']}{Style.RESET_ALL}")
                     send_meshtastic_message("Small Region", earthquake_small['ReportContent'])
 
             if new_origin_time_all != last_all_time:
-                print("All Regions Update Detected")
+                print(f"{Fore.GREEN}All Regions Update Detected{Style.RESET_ALL}")
                 last_all_time = new_origin_time_all
                 updated = True
                 if earthquake_all and earthquake_all['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeValue'] > config['magnitude_threshold']:
-                    print("All Regions", earthquake_all['ReportContent'])
+                    print(f"{Fore.GREEN}All Regions: {earthquake_all['ReportContent']}{Style.RESET_ALL}")
                     send_meshtastic_message("All Regions", earthquake_all['ReportContent'])
 
-            # if new_weather_time != last_weather_time:
-            #     print("Weather Update Detected")
-            #     last_weather_time = new_weather_time
-            #     updated = True
-            #     #send_meshtastic_message("Weather Alert", weather_content)
-
             if current_time.hour == 8 and (last_run_day is None or last_run_day != today_date):
-                # 仅在每天的8点执行一次
-                url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001?Authorization=CWA-608053CD-525F-4018-ACD8-DF7F8C5C380E&format=JSON&locationName=花蓮縣,澎湖縣,臺北市,臺中市,高雄市"
-                weather_data = fetch_weather_data(url)
+                weather_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
+                weather_data = fetch_weather_data(config)
                 if weather_data:
                     parsed_data = parse_weather_data(weather_data)
                     formatted_forecasts = format_forecast(parsed_data)
@@ -330,21 +321,21 @@ def main():
                         print(forecast)
                         send_meshtastic_message("0800天氣預報", forecast)
 
-                last_run_day = today_date  # 更新最后运行日期
-
+                last_run_day = today_date
+                logging.info(f"Last run day: {last_run_day}")
             if updated:
                 save_last_origin_times_db(db_connection, last_small_time, last_all_time, last_weather_time)
-            else:
-                if debugMode:
-                    print(f"Checked data: Small: {last_small_time}, All: {last_all_time}, Weather: {last_weather_time}")
+            #print adn log last_run_day 
+            print(f"Last run day: {last_run_day}")
+           
 
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print("Program terminated by user.")
+        print(f"{Fore.YELLOW}Program terminated by user.{Style.RESET_ALL}")
     finally:
         if db_connection:
-            db_connection.close()  # 确保在程序结束前关闭数据库连接
+            db_connection.close()
 
-        
 if __name__ == "__main__":
     main()
+
