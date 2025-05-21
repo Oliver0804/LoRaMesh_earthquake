@@ -60,7 +60,7 @@ for model in models_to_test:
                 ],
                 "max_tokens": 100  # 限制token數量以確保回應簡短
             }),
-            timeout=120  # 增加超時時間到120秒
+            timeout=300  # 增加超時時間到300秒
         )
         
         # 計算回應時間

@@ -161,71 +161,29 @@ def fetch_earthquake_data(url, last_origin_time, config):
 
 def send_meshtastic_message(tip_msg, report_content, interface=None):
     try:
-        # 數據清理：確保訊息格式正確，避免協議解析錯誤
-        if not isinstance(tip_msg, str):
-            tip_msg = str(tip_msg) if tip_msg is not None else "Alert"
-        if not isinstance(report_content, str):
-            report_content = str(report_content) if report_content is not None else ""
-            
-        # 過濾掉可能導致解析錯誤的字符
-        tip_msg = tip_msg.replace('\x00', '').replace('\0', '')
-        report_content = report_content.replace('\x00', '').replace('\0', '')
-            
         # 檢查是否需要創建新的連接
         local_interface = interface
         close_after = False
         
         if local_interface is None:
-            try:
-                # 使用標準的連接初始化（已移除connectTimeout參數）
-                local_interface = meshtastic.serial_interface.SerialInterface()
-                close_after = True
-                logging.info("Created temporary Meshtastic connection for sending message")
-            except Exception as conn_err:
-                logging.error(f"Failed to create temporary Meshtastic connection: {str(conn_err)}")
-                print(f"{Fore.RED}無法創建臨時連接發送訊息: {str(conn_err)}{Style.RESET_ALL}")
-                return False
+            local_interface = meshtastic.serial_interface.SerialInterface()
+            close_after = True
         
         # 組合訊息
         message = f"[{tip_msg}] {report_content}"
         
-        # 訊息大小限制檢查 - Meshtastic協議有大小限制，過大的訊息可能導致錯誤
-        if len(message.encode('utf-8')) > 200:  # 設定一個安全值，Meshtastic可能有自己的限制
-            logging.warning(f"Message too large ({len(message.encode('utf-8'))} bytes), truncating")
-            # 截斷訊息，確保不超過限制
-            message = message[:197] + "..."
-        
-        try:
-            # 發送訊息到 channel 2，設置超時處理
-            local_interface.sendText(message, channelIndex=2)
-        except Exception as send_err:
-            logging.error(f"Error sending message: {str(send_err)}")
-            print(f"{Fore.RED}發送訊息時出錯: {str(send_err)}{Style.RESET_ALL}")
-            
-            # 如果是臨時創建的連接，要確保關閉
-            if close_after and local_interface:
-                try:
-                    local_interface.close()
-                except Exception as close_err:
-                    logging.warning(f"Error closing connection after send error: {str(close_err)}")
-            return False
+        # 發送訊息到 channel 2
+        local_interface.sendText(message, channelIndex=2)
         
         # 如果是臨時創建的連接，則關閉
         if close_after:
-            try:
-                local_interface.close()
-            except Exception as close_err:
-                logging.warning(f"Error closing temporary connection: {str(close_err)}")
-                print(f"{Fore.YELLOW}關閉臨時連接時出錯: {str(close_err)}{Style.RESET_ALL}")
-                # 這不是致命錯誤，訊息已發送成功
+            local_interface.close()
         
         logging.info(f"Meshtastic message sent: {tip_msg}")
         print(f"{Fore.GREEN}Meshtastic message sent: {tip_msg}{Style.RESET_ALL}")
-        return True
     except Exception as e:
         logging.error(f"Failed to send Meshtastic message: {str(e)}")
         print(f"{Fore.RED}Failed to send Meshtastic message: {str(e)}{Style.RESET_ALL}")
-        return False
 
 
 def format_forecast(forecast_summary):
@@ -331,19 +289,11 @@ def parse_weather_data(records):
 def on_receive(packet, interface):
     """處理收到的 Meshtastic 訊息"""
     try:
-        # 協議錯誤處理：初始化協議錯誤計數器（如果尚未初始化）
-        if not hasattr(main, 'protocol_errors'):
-            main.protocol_errors = 0
-            
         # 數據驗證：檢查封包是否有效
         if not isinstance(packet, dict):
             error_msg = f"接收到無效封包格式: {type(packet)}"
             logging.warning(error_msg)
             print(f"{Fore.YELLOW}{error_msg}{Style.RESET_ALL}")
-            
-            # 增加協議錯誤計數
-            main.protocol_errors += 1
-            print(f"{Fore.YELLOW}協議錯誤計數: {main.protocol_errors}/5{Style.RESET_ALL}")
             return
             
         # 數據驗證：檢查必要欄位
@@ -351,44 +301,29 @@ def on_receive(packet, interface):
             error_msg = "封包缺少 'decoded' 欄位"
             logging.warning(error_msg)
             print(f"{Fore.YELLOW}{error_msg}{Style.RESET_ALL}")
-            
-            # 增加協議錯誤計數
-            main.protocol_errors += 1
-            print(f"{Fore.YELLOW}協議錯誤計數: {main.protocol_errors}/5{Style.RESET_ALL}")
             return
             
         # 從封包中提取訊息內容和發送者資訊
-        try:
-            decoded = packet.get('decoded', {})
-            message = decoded.get('text', '')
-            if not isinstance(message, str):
-                error_msg = f"訊息內容格式無效: {type(message)}"
-                logging.warning(error_msg)
-                print(f"{Fore.YELLOW}{error_msg}{Style.RESET_ALL}")
-                message = str(message) if message is not None else ""
-                
-            sender = packet.get('fromId', 'Unknown')
-            channel = packet.get('channel', 0)
-            
-            # 數據驗證：檢查頻道值
-            if not isinstance(channel, int):
-                error_msg = f"頻道格式無效: {type(channel)}"
-                logging.warning(error_msg)
-                print(f"{Fore.YELLOW}{error_msg}{Style.RESET_ALL}")
-                try:
-                    channel = int(channel) if channel is not None else 0
-                except (ValueError, TypeError):
-                    channel = 0
-        except Exception as decode_error:
-            # 特別處理解碼錯誤
-            error_msg = f"訊息解碼錯誤: {str(decode_error)}"
+        decoded = packet.get('decoded', {})
+        message = decoded.get('text', '')
+        if not isinstance(message, str):
+            error_msg = f"訊息內容格式無效: {type(message)}"
             logging.warning(error_msg)
             print(f"{Fore.YELLOW}{error_msg}{Style.RESET_ALL}")
+            message = str(message) if message is not None else ""
             
-            # 增加協議錯誤計數
-            main.protocol_errors += 1
-            print(f"{Fore.YELLOW}協議錯誤計數: {main.protocol_errors}/5{Style.RESET_ALL}")
-            return
+        sender = packet.get('fromId', 'Unknown')
+        channel = packet.get('channel', 0)
+        
+        # 數據驗證：檢查頻道值
+        if not isinstance(channel, int):
+            error_msg = f"頻道格式無效: {type(channel)}"
+            logging.warning(error_msg)
+            print(f"{Fore.YELLOW}{error_msg}{Style.RESET_ALL}")
+            try:
+                channel = int(channel) if channel is not None else 0
+            except (ValueError, TypeError):
+                channel = 0
                 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -443,43 +378,48 @@ def on_receive(packet, interface):
                             logging.error("Cannot send LLM response: Meshtastic interface not connected")
                     else:
                         print(f"{Fore.YELLOW}@bashcat後沒有實際內容，跳過LLM處理{Style.RESET_ALL}")
-                        if interface is not None:
-                            interface.sendText("您好，請在@bashcat後輸入您的問題，例如「@bashcat 什麼是地震？」", channelIndex=channel)
                 except Exception as query_error:
                     error_msg = f"處理@bashcat查詢時出錯: {str(query_error)}"
                     print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
                     logging.error(f"Error processing @bashcat query: {str(query_error)}")
-            else:
-                print(f"{Fore.YELLOW}訊息不含@bashcat標記，不調用LLM{Style.RESET_ALL}")
-                
-            # 收到正常訊息，重置協議錯誤計數
-            if hasattr(main, 'protocol_errors') and main.protocol_errors > 0:
-                print(f"{Fore.GREEN}成功處理訊息，重置協議錯誤計數{Style.RESET_ALL}")
-                main.protocol_errors = 0
-                
     except Exception as e:
-        # 處理所有其他錯誤，包括可能的protobuf解析錯誤
         error_msg = f"處理收到的訊息時出錯: {str(e)}"
         print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
         logging.error(f"Error processing received message: {str(e)}")
-        
-        # 檢查是否為解析錯誤(DecodeError或其他解析相關錯誤)
-        error_str = str(e).lower()
-        if "decode" in error_str or "parse" in error_str or "protobuf" in error_str:
-            # 這是一個協議解析錯誤，增加計數
-            if hasattr(main, 'protocol_errors'):
-                main.protocol_errors += 1
+                        print(f"{Fore.CYAN}LLM回應: {llm_response}{Style.RESET_ALL}")
+                        
+                        # 發送LLM回應
+                        if interface is not None:
+                            # 將LLM回應發送到原始頻道
+                            interface.sendText(f"{llm_response}", channelIndex=channel)
+                            print(f"{Fore.GREEN}已發送LLM回應到頻道 {channel}{Style.RESET_ALL}")
+                            logging.info(f"Sent LLM response to channel {channel}: {llm_response}")
+                        else:
+                            print(f"{Fore.YELLOW}無法發送LLM回應：Meshtastic介面不可用{Style.RESET_ALL}")
+                            logging.warning("Cannot send LLM response: Meshtastic interface unavailable")
+                    else:
+                        print(f"{Fore.YELLOW}@bashcat後沒有實際查詢內容{Style.RESET_ALL}")
+                        if interface is not None:
+                            interface.sendText("您好，請在@bashcat後輸入您的問題，例如「@bashcat 什麼是地震？」", channelIndex=channel)
+                except Exception as llm_error:
+                    error_msg = f"LLM回應生成失敗: {str(llm_error)[:60]}..."
+                    print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
+                    logging.error(f"LLM response error: {str(llm_error)}")
+                    
+                    # 即使LLM失敗，也發送錯誤訊息
+                    if interface is not None:
+                        interface.sendText(f"[錯誤] {error_msg}", channelIndex=channel)
             else:
-                main.protocol_errors = 1
-                
-            print(f"{Fore.RED}檢測到協議解析錯誤，當前計數: {main.protocol_errors}/5{Style.RESET_ALL}")
-            logging.warning(f"Protocol parse error detected, count: {main.protocol_errors}/5")
+                print(f"{Fore.YELLOW}訊息不含@bashcat標記，不調用LLM{Style.RESET_ALL}")
             
-            # 實現指數退避策略 - 連續錯誤時增加更長的等待時間
-            if main.protocol_errors > 3:
-                wait_time = min(2 ** (main.protocol_errors - 3), 10)  # 最多等待10秒
-                print(f"{Fore.YELLOW}連續多次協議錯誤，等待{wait_time}秒以穩定連接...{Style.RESET_ALL}")
-                time.sleep(wait_time)
+            # 記錄到日誌
+            logging.info(f"Meshtastic message received - From: {sender}, Channel: {channel}, Message: {message}")
+        else:
+            # 只記錄但不顯示其他頻道的訊息
+            logging.debug(f"Ignored message from channel {channel} - From: {sender}, Message: {message}")
+    except Exception as e:
+        logging.error(f"Error processing received message: {str(e)}")
+        print(f"{Fore.RED}處理收到的訊息時發生錯誤: {str(e)}{Style.RESET_ALL}")
 
 def main():
     clean_old_logs(log_dir)
@@ -490,7 +430,6 @@ def main():
     
     # 嘗試連接 Meshtastic 裝置
     try:
-        # 連接到Meshtastic裝置
         meshtastic_interface = meshtastic.serial_interface.SerialInterface()
         print(f"{Fore.GREEN}成功連接到 Meshtastic 裝置{Style.RESET_ALL}")
         logging.info("Connected to Meshtastic device")
@@ -566,145 +505,108 @@ def main():
             #print adn log last_run_day 
             print(f"Last run day: {last_run_day}")
             
-            # 連接管理和檢查邏輯
-            # 降低連接檢查頻率，從20次迴圈改為100次迴圈（約50秒）
+            # 每 20 次迴圈顯示一次 Meshtastic 連線狀態 (約每 10 秒)
             if hasattr(main, 'loop_counter'):
                 main.loop_counter += 1
             else:
                 main.loop_counter = 0
                 
-            # 添加一個重新連接計數器，避免頻繁重連
-            if not hasattr(main, 'reconnect_attempts'):
-                main.reconnect_attempts = 0
-                
-            # 添加上次連接成功的時間戳，用於實現冷卻期
-            if not hasattr(main, 'last_successful_connection'):
-                main.last_successful_connection = time.time()
-                
-            # 添加協議錯誤計數器
-            if not hasattr(main, 'protocol_errors'):
-                main.protocol_errors = 0
-                
-            # 持續的協議錯誤應該觸發連接重置
-            if hasattr(main, 'protocol_errors') and main.protocol_errors > 5:
-                print(f"{Fore.RED}檢測到多次協議錯誤 ({main.protocol_errors}/5)，強制重置連接...{Style.RESET_ALL}")
-                logging.warning(f"Multiple protocol errors detected ({main.protocol_errors}/5), forcing connection reset")
-                
-                try:
-                    if meshtastic_interface:
-                        try:
-                            meshtastic_interface.close()
-                        except Exception as close_error:
-                            logging.warning(f"Error during connection close in reset: {str(close_error)}")
-                            
-                    meshtastic_interface = None
+            # 降低連接檢查頻率，從20次迴圈改為100次迴圈（約50秒）
+                if hasattr(main, 'loop_counter'):
+                    main.loop_counter += 1
+                else:
+                    main.loop_counter = 0
                     
-                    # 重置計數器
-                    main.protocol_errors = 0
+                # 添加一個重新連接計數器，避免頻繁重連
+                if not hasattr(main, 'reconnect_attempts'):
                     main.reconnect_attempts = 0
                     
-                    # 設置冷卻期
-                    main.last_connection_attempt = time.time()
+                # 添加上次連接成功的時間戳，用於實現冷卻期
+                if not hasattr(main, 'last_successful_connection'):
+                    main.last_successful_connection = time.time()
                     
-                    # 強制等待5秒讓系統穩定
-                    time.sleep(5)
-                    
-                    print(f"{Fore.YELLOW}連接已重置，等待下一次連接嘗試{Style.RESET_ALL}")
-                    logging.info("Connection has been reset due to protocol errors, waiting for next connection attempt")
-                except Exception as reset_error:
-                    logging.error(f"Error during forced reset: {str(reset_error)}")
-                    print(f"{Fore.RED}重置連接時發生錯誤: {str(reset_error)}{Style.RESET_ALL}")
-                
-            # 每100次迴圈檢查一次連接狀態
-            if main.loop_counter % 100 == 0:
-                if meshtastic_interface is not None:
-                    try:
-                        # 使用一個更簡單的方法檢查連接狀態，避免複雜操作
-                        is_connected = hasattr(meshtastic_interface, 'localNode') and meshtastic_interface.localNode is not None
-                        
-                        if is_connected:
-                            print(f"{Fore.GREEN}Meshtastic 連線中 - 保持連線狀態{Style.RESET_ALL}")
-                            main.reconnect_attempts = 0  # 重置重連計數器
-                            main.last_successful_connection = time.time()  # 更新上次成功連接時間
-                        else:
-                            raise Exception("連接不完整")
-                            
-                    except Exception as e:
-                        print(f"{Fore.YELLOW}Meshtastic 連線檢查失敗: {str(e)}{Style.RESET_ALL}")
-                        
-                        # 檢查距離上次成功連接是否已經過了至少60秒（冷卻期）
-                        current_time = time.time()
-                        if current_time - main.last_successful_connection > 60:
-                            # 檢查重連嘗試次數，避免無限重連
-                            if main.reconnect_attempts < 3:
-                                print(f"{Fore.YELLOW}嘗試重新連接 Meshtastic (嘗試 #{main.reconnect_attempts + 1}){Style.RESET_ALL}")
-                                # 嘗試重新連接
-                                try:
-                                    # 安全關閉現有連接
-                                    if meshtastic_interface:
-                                        try:
-                                            meshtastic_interface.close()
-                                        except Exception as close_error:
-                                            logging.warning(f"Error during connection close: {str(close_error)}")
-                                    
-                                    # 預防性延遲，確保Serial端口已被釋放
-                                    time.sleep(2)
-                                    
-                                    # 重新連接
-                                    meshtastic_interface = meshtastic.serial_interface.SerialInterface()
-                                    print(f"{Fore.GREEN}已重新連接到 Meshtastic 裝置{Style.RESET_ALL}")
-                                    logging.info("Reconnected to Meshtastic device")
-                                    
-                                    # 重新訂閱訊息接收事件
-                                    pub.subscribe(on_receive, "meshtastic.receive")
-                                    print(f"{Fore.GREEN}已重新訂閱 Meshtastic 訊息接收事件{Style.RESET_ALL}")
-                                    logging.info("Resubscribed to Meshtastic message events")
-                                    
-                                    # 更新成功連接時間和計數器
-                                    main.last_successful_connection = time.time()
-                                    main.reconnect_attempts += 1
-                                except Exception as reconnect_error:
-                                    print(f"{Fore.RED}無法重新連接 Meshtastic: {str(reconnect_error)}{Style.RESET_ALL}")
-                                    logging.error(f"Failed to reconnect to Meshtastic: {str(reconnect_error)}")
-                                    main.reconnect_attempts += 1
-                                    meshtastic_interface = None
-                            else:
-                                print(f"{Fore.RED}達到最大重連嘗試次數 (3)，暫停重連嘗試{Style.RESET_ALL}")
-                                # 每30分鐘重置重連計數器，允許再次嘗試
-                                if current_time - main.last_successful_connection > 1800:  # 30分鐘
-                                    main.reconnect_attempts = 0
-                                    print(f"{Fore.YELLOW}重置重連計數器，允許新的重連嘗試{Style.RESET_ALL}")
-                        else:
-                            print(f"{Fore.YELLOW}連接失敗，但處於冷卻期，跳過重連{Style.RESET_ALL}")
-                else:
-                    # Meshtastic接口為空，嘗試初始連接
-                    print(f"{Fore.YELLOW}Meshtastic 未連接{Style.RESET_ALL}")
-                    
-                    # 檢查冷卻期
-                    current_time = time.time()
-                    if not hasattr(main, 'last_connection_attempt') or current_time - main.last_connection_attempt > 60:
-                        # 嘗試連接
+                # 每100次迴圈檢查一次連接狀態
+                if main.loop_counter % 100 == 0:
+                    if meshtastic_interface is not None:
                         try:
-                            # 連接到Meshtastic裝置
-                            meshtastic_interface = meshtastic.serial_interface.SerialInterface()
-                            print(f"{Fore.GREEN}已連接到 Meshtastic 裝置{Style.RESET_ALL}")
-                            logging.info("Connected to Meshtastic device")
+                            # 使用一個更簡單的方法檢查連接狀態，避免複雜操作
+                            is_connected = hasattr(meshtastic_interface, 'localNode') and meshtastic_interface.localNode is not None
                             
-                            # 訂閱訊息接收事件
-                            pub.subscribe(on_receive, "meshtastic.receive")
-                            print(f"{Fore.GREEN}已訂閱 Meshtastic 訊息接收事件{Style.RESET_ALL}")
-                            logging.info("Subscribed to Meshtastic message events")
-                            
-                            # 更新成功連接時間
-                            main.last_successful_connection = time.time()
-                            main.last_connection_attempt = time.time()
-                            main.reconnect_attempts = 0
+                            if is_connected:
+                                print(f"{Fore.GREEN}Meshtastic 連線中 - 保持連線狀態{Style.RESET_ALL}")
+                                main.reconnect_attempts = 0  # 重置重連計數器
+                                main.last_successful_connection = time.time()  # 更新上次成功連接時間
+                            else:
+                                raise Exception("連接不完整")
+                                
                         except Exception as e:
-                            print(f"{Fore.RED}無法連接 Meshtastic: {str(e)}{Style.RESET_ALL}")
-                            logging.error(f"Cannot connect to Meshtastic device: {str(e)}")
-                            main.last_connection_attempt = time.time()
+                            print(f"{Fore.YELLOW}Meshtastic 連線檢查失敗: {str(e)}{Style.RESET_ALL}")
+                            
+                            # 檢查距離上次成功連接是否已經過了至少60秒（冷卻期）
+                            current_time = time.time()
+                            if current_time - main.last_successful_connection > 60:
+                                # 檢查重連嘗試次數，避免無限重連
+                                if main.reconnect_attempts < 3:
+                                    print(f"{Fore.YELLOW}嘗試重新連接 Meshtastic (嘗試 #{main.reconnect_attempts + 1}){Style.RESET_ALL}")
+                                    # 嘗試重新連接
+                                    try:
+                                        if meshtastic_interface:
+                                            meshtastic_interface.close()
+                                        # 增加連接超時設置為30秒
+                                        meshtastic_interface = meshtastic.serial_interface.SerialInterface(connectTimeout=30)
+                                        print(f"{Fore.GREEN}已重新連接到 Meshtastic 裝置{Style.RESET_ALL}")
+                                        logging.info("Reconnected to Meshtastic device")
+                                        
+                                        # 重新訂閱訊息接收事件
+                                        pub.subscribe(on_receive, "meshtastic.receive")
+                                        print(f"{Fore.GREEN}已重新訂閱 Meshtastic 訊息接收事件{Style.RESET_ALL}")
+                                        logging.info("Resubscribed to Meshtastic message events")
+                                        
+                                        # 更新成功連接時間和計數器
+                                        main.last_successful_connection = time.time()
+                                        main.reconnect_attempts += 1
+                                    except Exception as reconnect_error:
+                                        print(f"{Fore.RED}無法重新連接 Meshtastic: {str(reconnect_error)}{Style.RESET_ALL}")
+                                        logging.error(f"Failed to reconnect to Meshtastic: {str(reconnect_error)}")
+                                        main.reconnect_attempts += 1
+                                        meshtastic_interface = None
+                                else:
+                                    print(f"{Fore.RED}達到最大重連嘗試次數 (3)，暫停重連嘗試{Style.RESET_ALL}")
+                                    # 每30分鐘重置重連計數器，允許再次嘗試
+                                    if current_time - main.last_successful_connection > 1800:  # 30分鐘
+                                        main.reconnect_attempts = 0
+                                        print(f"{Fore.YELLOW}重置重連計數器，允許新的重連嘗試{Style.RESET_ALL}")
+                            else:
+                                print(f"{Fore.YELLOW}連接失敗，但處於冷卻期，跳過重連{Style.RESET_ALL}")
                     else:
-                        print(f"{Fore.YELLOW}上次連接嘗試太近，等待冷卻期結束{Style.RESET_ALL}")
+                        # Meshtastic接口為空，嘗試初始連接
+                        print(f"{Fore.YELLOW}Meshtastic 未連接{Style.RESET_ALL}")
+                        
+                        # 檢查冷卻期
+                        current_time = time.time()
+                        if not hasattr(main, 'last_connection_attempt') or current_time - main.last_connection_attempt > 60:
+                            # 嘗試連接
+                            try:
+                                # 增加連接超時設置為30秒
+                                meshtastic_interface = meshtastic.serial_interface.SerialInterface(connectTimeout=30)
+                                print(f"{Fore.GREEN}已連接到 Meshtastic 裝置{Style.RESET_ALL}")
+                                logging.info("Connected to Meshtastic device")
+                                
+                                # 訂閱訊息接收事件
+                                pub.subscribe(on_receive, "meshtastic.receive")
+                                print(f"{Fore.GREEN}已訂閱 Meshtastic 訊息接收事件{Style.RESET_ALL}")
+                                logging.info("Subscribed to Meshtastic message events")
+                                
+                                # 更新成功連接時間
+                                main.last_successful_connection = time.time()
+                                main.last_connection_attempt = time.time()
+                                main.reconnect_attempts = 0
+                            except Exception as e:
+                                print(f"{Fore.RED}無法連接 Meshtastic: {str(e)}{Style.RESET_ALL}")
+                                logging.error(f"Cannot connect to Meshtastic device: {str(e)}")
+                                main.last_connection_attempt = time.time()
+                        else:
+                            print(f"{Fore.YELLOW}上次連接嘗試太近，等待冷卻期結束{Style.RESET_ALL}")
 
             time.sleep(0.5)
     except KeyboardInterrupt:
