@@ -1,4 +1,3 @@
-
 import time
 import os
 import json
@@ -10,6 +9,12 @@ from colorama import Fore, Style
 import logging
 import requests
 from requests.models import PreparedRequest
+import meshtastic
+import meshtastic.serial_interface
+from pubsub import pub
+# 確保路徑正確以便導入call_llm模組
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 debugMode = True
 
@@ -154,15 +159,31 @@ def fetch_earthquake_data(url, last_origin_time, config):
         print(f"{Fore.RED}HTTP Error: {response.status_code}{Style.RESET_ALL}")
     return last_origin_time, None
 
-def send_meshtastic_message(tip_msg, report_content):
-    command = f'meshtastic --sendtext "[{tip_msg}] {report_content}" --ch-index 2'
-    result = os.system(command)
-    if result == 0:
+def send_meshtastic_message(tip_msg, report_content, interface=None):
+    try:
+        # 檢查是否需要創建新的連接
+        local_interface = interface
+        close_after = False
+        
+        if local_interface is None:
+            local_interface = meshtastic.serial_interface.SerialInterface()
+            close_after = True
+        
+        # 組合訊息
+        message = f"[{tip_msg}] {report_content}"
+        
+        # 發送訊息到 channel 2
+        local_interface.sendText(message, channelIndex=2)
+        
+        # 如果是臨時創建的連接，則關閉
+        if close_after:
+            local_interface.close()
+        
         logging.info(f"Meshtastic message sent: {tip_msg}")
         print(f"{Fore.GREEN}Meshtastic message sent: {tip_msg}{Style.RESET_ALL}")
-    else:
-        logging.error("Failed to send Meshtastic message")
-        print(f"{Fore.RED}Failed to send Meshtastic message{Style.RESET_ALL}")
+    except Exception as e:
+        logging.error(f"Failed to send Meshtastic message: {str(e)}")
+        print(f"{Fore.RED}Failed to send Meshtastic message: {str(e)}{Style.RESET_ALL}")
 
 
 def format_forecast(forecast_summary):
@@ -264,21 +285,115 @@ def parse_weather_data(records):
     print(f"\nTotal data entries processed: {len(forecast_summary)}")
     return forecast_summary
 
+# 定義接收訊息的回調函數
+def on_receive(packet, interface):
+    """處理收到的 Meshtastic 訊息"""
+    try:
+        # 從封包中提取訊息內容和發送者資訊
+        message = packet.get('decoded', {}).get('text', '')
+        sender = packet.get('fromId', 'Unknown')
+        channel = packet.get('channel', 0)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 只處理頻道1、2、3的訊息
+        if channel in [1, 2, 3]:
+            # 格式化並顯示訊息內容
+            print(f"\n{Fore.MAGENTA}===== 收到 Meshtastic 訊息 ====={Style.RESET_ALL}")
+            print(f"{Fore.MAGENTA}時間: {timestamp}{Style.RESET_ALL}")
+            print(f"{Fore.MAGENTA}發送者: {sender}{Style.RESET_ALL}")
+            print(f"{Fore.MAGENTA}頻道: {channel}{Style.RESET_ALL}")
+            print(f"{Fore.MAGENTA}內容: {message}{Style.RESET_ALL}")
+            print(f"{Fore.MAGENTA}==========================={Style.RESET_ALL}\n")
+            
+            # 檢查訊息是否包含"@bashcat"
+            if "@bashcat" in message:
+                print(f"{Fore.CYAN}偵測到@bashcat提及，正在準備LLM回應...{Style.RESET_ALL}")
+                
+                # 提取@bashcat後的實際內容
+                try:
+                    # 尋找@bashcat在訊息中的位置
+                    tag_position = message.find("@bashcat")
+                    # 提取@bashcat後的訊息作為真正要處理的內容
+                    actual_query = message[tag_position + 8:].strip()
+                    
+                    if actual_query:
+                        # 導入call_llm模組
+                        from call_llm import generate_response
+                        
+                        print(f"{Fore.CYAN}處理查詢: '{actual_query}'{Style.RESET_ALL}")
+                        
+                        # 生成LLM回應，限制在66字以內
+                        llm_response = generate_response(actual_query, max_length=66)
+                        print(f"{Fore.CYAN}LLM回應: {llm_response}{Style.RESET_ALL}")
+                        
+                        # 發送LLM回應
+                        if interface is not None:
+                            # 將LLM回應發送到原始頻道
+                            interface.sendText(f"{llm_response}", channelIndex=channel)
+                            print(f"{Fore.GREEN}已發送LLM回應到頻道 {channel}{Style.RESET_ALL}")
+                            logging.info(f"Sent LLM response to channel {channel}: {llm_response}")
+                        else:
+                            print(f"{Fore.YELLOW}無法發送LLM回應：Meshtastic介面不可用{Style.RESET_ALL}")
+                            logging.warning("Cannot send LLM response: Meshtastic interface unavailable")
+                    else:
+                        print(f"{Fore.YELLOW}@bashcat後沒有實際查詢內容{Style.RESET_ALL}")
+                        if interface is not None:
+                            interface.sendText("您好，請在@bashcat後輸入您的問題，例如「@bashcat 什麼是地震？」", channelIndex=channel)
+                except Exception as llm_error:
+                    error_msg = f"LLM回應生成失敗: {str(llm_error)[:60]}..."
+                    print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
+                    logging.error(f"LLM response error: {str(llm_error)}")
+                    
+                    # 即使LLM失敗，也發送錯誤訊息
+                    if interface is not None:
+                        interface.sendText(f"[錯誤] {error_msg}", channelIndex=channel)
+            else:
+                print(f"{Fore.YELLOW}訊息不含@bashcat標記，不調用LLM{Style.RESET_ALL}")
+            
+            # 記錄到日誌
+            logging.info(f"Meshtastic message received - From: {sender}, Channel: {channel}, Message: {message}")
+        else:
+            # 只記錄但不顯示其他頻道的訊息
+            logging.debug(f"Ignored message from channel {channel} - From: {sender}, Message: {message}")
+    except Exception as e:
+        logging.error(f"Error processing received message: {str(e)}")
+        print(f"{Fore.RED}處理收到的訊息時發生錯誤: {str(e)}{Style.RESET_ALL}")
+
 def main():
     clean_old_logs(log_dir)
     config = load_config()
     db_connection = connect_db(config)
     last_run_day = None
-
+    meshtastic_interface = None
+    
+    # 嘗試連接 Meshtastic 裝置
+    try:
+        meshtastic_interface = meshtastic.serial_interface.SerialInterface()
+        print(f"{Fore.GREEN}成功連接到 Meshtastic 裝置{Style.RESET_ALL}")
+        logging.info("Connected to Meshtastic device")
+        
+        # 訂閱訊息接收事件
+        pub.subscribe(on_receive, "meshtastic.receive")
+        print(f"{Fore.GREEN}已訂閱 Meshtastic 訊息接收事件{Style.RESET_ALL}")
+        logging.info("Subscribed to Meshtastic message events")
+    except Exception as e:
+        print(f"{Fore.RED}無法連接 Meshtastic 裝置: {str(e)}{Style.RESET_ALL}")
+        logging.error(f"Cannot connect to Meshtastic device: {str(e)}")
+        meshtastic_interface = None
+        
+    # 記錄系統啟動
+    logging.info("System started.")
     try:
         while True:
             current_time = datetime.now()
             today_date = current_time.date()
             if db_connection is None or not db_connection.is_connected():
                 print(f"{Fore.YELLOW}数据库连接丢失，尝试重新连接...{Style.RESET_ALL}")
+                logging.warning("Database connection lost, attempting to reconnect...")
                 db_connection = connect_db(config)
                 if db_connection is None or not db_connection.is_connected():
                     print(f"{Fore.RED}重新连接失败，稍后再试...{Style.RESET_ALL}")
+                    logging.error("Reconnection failed, retrying in 10 seconds...")
                     time.sleep(10)
                     continue
 
@@ -301,7 +416,7 @@ def main():
                 updated = True
                 if earthquake_small and earthquake_small['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeValue'] > config['magnitude_threshold']:
                     print(f"{Fore.GREEN}Small Region: {earthquake_small['ReportContent']}{Style.RESET_ALL}")
-                    send_meshtastic_message("Small Region", earthquake_small['ReportContent'])
+                    send_meshtastic_message("Small Region", earthquake_small['ReportContent'], meshtastic_interface)
 
             if new_origin_time_all != last_all_time:
                 print(f"{Fore.GREEN}All Regions Update Detected{Style.RESET_ALL}")
@@ -309,7 +424,7 @@ def main():
                 updated = True
                 if earthquake_all and earthquake_all['EarthquakeInfo']['EarthquakeMagnitude']['MagnitudeValue'] > config['magnitude_threshold']:
                     print(f"{Fore.GREEN}All Regions: {earthquake_all['ReportContent']}{Style.RESET_ALL}")
-                    send_meshtastic_message("All Regions", earthquake_all['ReportContent'])
+                    send_meshtastic_message("All Regions", earthquake_all['ReportContent'], meshtastic_interface)
 
             if current_time.hour == 8 and (last_run_day is None or last_run_day != today_date):
                 weather_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
@@ -319,7 +434,7 @@ def main():
                     formatted_forecasts = format_forecast(parsed_data)
                     for forecast in formatted_forecasts:
                         print(forecast)
-                        send_meshtastic_message("0800天氣預報", forecast)
+                        send_meshtastic_message("0800天氣預報", forecast, meshtastic_interface)
 
                 last_run_day = today_date
                 logging.info(f"Last run day: {last_run_day}")
@@ -327,14 +442,64 @@ def main():
                 save_last_origin_times_db(db_connection, last_small_time, last_all_time, last_weather_time)
             #print adn log last_run_day 
             print(f"Last run day: {last_run_day}")
-           
+            
+            # 每 20 次迴圈顯示一次 Meshtastic 連線狀態 (約每 10 秒)
+            if hasattr(main, 'loop_counter'):
+                main.loop_counter += 1
+            else:
+                main.loop_counter = 0
+                
+            if main.loop_counter % 20 == 0:
+                if meshtastic_interface is not None:
+                    try:
+                        # 取得裝置資訊來檢查連線狀態
+                        node_info = meshtastic_interface.myInfo
+                        print(f"{Fore.GREEN}Meshtastic 連線中 - 節點: {node_info.get('user', {}).get('longName', 'Unknown')}{Style.RESET_ALL}")
+                    except Exception as e:
+                        print(f"{Fore.RED}Meshtastic 連線中斷: {str(e)}{Style.RESET_ALL}")
+                        # 嘗試重新連接
+                        try:
+                            if meshtastic_interface:
+                                meshtastic_interface.close()
+                            meshtastic_interface = meshtastic.serial_interface.SerialInterface()
+                            print(f"{Fore.GREEN}已重新連接到 Meshtastic 裝置{Style.RESET_ALL}")
+                            logging.info("Reconnected to Meshtastic device")
+                            
+                            # 重新訂閱訊息接收事件
+                            pub.subscribe(on_receive, "meshtastic.receive")
+                            print(f"{Fore.GREEN}已重新訂閱 Meshtastic 訊息接收事件{Style.RESET_ALL}")
+                            logging.info("Resubscribed to Meshtastic message events")
+                        except Exception as reconnect_error:
+                            print(f"{Fore.RED}無法重新連接 Meshtastic: {str(reconnect_error)}{Style.RESET_ALL}")
+                            logging.error(f"Failed to reconnect to Meshtastic: {str(reconnect_error)}")
+                            meshtastic_interface = None
+                else:
+                    print(f"{Fore.YELLOW}Meshtastic 未連接{Style.RESET_ALL}")
+                    # 嘗試連接
+                    try:
+                        meshtastic_interface = meshtastic.serial_interface.SerialInterface()
+                        print(f"{Fore.GREEN}已連接到 Meshtastic 裝置{Style.RESET_ALL}")
+                        logging.info("Connected to Meshtastic device")
+                        
+                        # 訂閱訊息接收事件
+                        pub.subscribe(on_receive, "meshtastic.receive")
+                        print(f"{Fore.GREEN}已訂閱 Meshtastic 訊息接收事件{Style.RESET_ALL}")
+                        logging.info("Subscribed to Meshtastic message events")
+                    except Exception as e:
+                        print(f"{Fore.RED}無法連接 Meshtastic: {str(e)}{Style.RESET_ALL}")
+                        logging.error(f"Cannot connect to Meshtastic device: {str(e)}")
 
             time.sleep(0.5)
     except KeyboardInterrupt:
         print(f"{Fore.YELLOW}Program terminated by user.{Style.RESET_ALL}")
+        logging.info("Program terminated by user.")
     finally:
         if db_connection:
             db_connection.close()
+        if meshtastic_interface:
+            meshtastic_interface.close()
+            print(f"{Fore.YELLOW}Meshtastic connection closed.{Style.RESET_ALL}")
+            logging.info("Meshtastic connection closed.")
 
 if __name__ == "__main__":
     main()
