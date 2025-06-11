@@ -12,6 +12,8 @@ from requests.models import PreparedRequest
 import meshtastic
 import meshtastic.serial_interface
 from pubsub import pub
+import threading
+from flask import Flask
 # 確保路徑正確以便導入call_llm模組
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -481,6 +483,32 @@ def on_receive(packet, interface):
                 print(f"{Fore.YELLOW}連續多次協議錯誤，等待{wait_time}秒以穩定連接...{Style.RESET_ALL}")
                 time.sleep(wait_time)
 
+# 全局變數用於在主程式和API之間共享Meshtastic接口
+shared_meshtastic_interface = None
+interface_lock = threading.Lock()
+
+def set_shared_meshtastic_interface(interface):
+    """設置共享的Meshtastic接口"""
+    global shared_meshtastic_interface
+    with interface_lock:
+        shared_meshtastic_interface = interface
+
+def get_shared_meshtastic_interface():
+    """獲取共享的Meshtastic接口"""
+    global shared_meshtastic_interface
+    with interface_lock:
+        return shared_meshtastic_interface
+
+def start_api_server():
+    """在背景線程中啟動API服務器"""
+    from api_server import run_api_server
+    try:
+        print(f"{Fore.GREEN}在背景啟動API服務器...{Style.RESET_ALL}")
+        run_api_server(host='0.0.0.0', port=5000)
+    except Exception as e:
+        print(f"{Fore.RED}API服務器啟動失敗: {str(e)}{Style.RESET_ALL}")
+        logging.error(f"Failed to start API server: {str(e)}")
+
 def main():
     clean_old_logs(log_dir)
     config = load_config()
@@ -488,12 +516,29 @@ def main():
     last_run_day = None
     meshtastic_interface = None
     
+    # 啟動API服務器線程
+    api_thread = threading.Thread(target=start_api_server, daemon=True)
+    api_thread.start()
+    print(f"{Fore.GREEN}API服務器線程已啟動{Style.RESET_ALL}")
+    
     # 嘗試連接 Meshtastic 裝置
     try:
         # 連接到Meshtastic裝置
         meshtastic_interface = meshtastic.serial_interface.SerialInterface()
         print(f"{Fore.GREEN}成功連接到 Meshtastic 裝置{Style.RESET_ALL}")
         logging.info("Connected to Meshtastic device")
+        
+        # 設置共享接口
+        set_shared_meshtastic_interface(meshtastic_interface)
+        
+        # 同時也設置API服務器的接口
+        try:
+            import api_server
+            api_server.set_meshtastic_interface(meshtastic_interface)
+            print(f"{Fore.GREEN}API服務器接口已更新{Style.RESET_ALL}")
+        except Exception as api_error:
+            print(f"{Fore.YELLOW}無法更新API服務器接口: {str(api_error)}{Style.RESET_ALL}")
+            logging.warning(f"Could not update API server interface: {str(api_error)}")
         
         # 訂閱訊息接收事件
         pub.subscribe(on_receive, "meshtastic.receive")
@@ -655,6 +700,18 @@ def main():
                                     print(f"{Fore.GREEN}已重新連接到 Meshtastic 裝置{Style.RESET_ALL}")
                                     logging.info("Reconnected to Meshtastic device")
                                     
+                                    # 更新共享接口
+                                    set_shared_meshtastic_interface(meshtastic_interface)
+                                    
+                                    # 同時也更新API服務器的接口
+                                    try:
+                                        import api_server
+                                        api_server.set_meshtastic_interface(meshtastic_interface)
+                                        print(f"{Fore.GREEN}API服務器接口已更新（重連）{Style.RESET_ALL}")
+                                    except Exception as api_error:
+                                        print(f"{Fore.YELLOW}無法更新API服務器接口（重連）: {str(api_error)}{Style.RESET_ALL}")
+                                        logging.warning(f"Could not update API server interface (reconnect): {str(api_error)}")
+                                    
                                     # 重新訂閱訊息接收事件
                                     pub.subscribe(on_receive, "meshtastic.receive")
                                     print(f"{Fore.GREEN}已重新訂閱 Meshtastic 訊息接收事件{Style.RESET_ALL}")
@@ -689,6 +746,18 @@ def main():
                             meshtastic_interface = meshtastic.serial_interface.SerialInterface()
                             print(f"{Fore.GREEN}已連接到 Meshtastic 裝置{Style.RESET_ALL}")
                             logging.info("Connected to Meshtastic device")
+                            
+                            # 設置共享接口
+                            set_shared_meshtastic_interface(meshtastic_interface)
+                            
+                            # 同時也更新API服務器的接口
+                            try:
+                                import api_server
+                                api_server.set_meshtastic_interface(meshtastic_interface)
+                                print(f"{Fore.GREEN}API服務器接口已更新（初始連接）{Style.RESET_ALL}")
+                            except Exception as api_error:
+                                print(f"{Fore.YELLOW}無法更新API服務器接口（初始連接）: {str(api_error)}{Style.RESET_ALL}")
+                                logging.warning(f"Could not update API server interface (initial): {str(api_error)}")
                             
                             # 訂閱訊息接收事件
                             pub.subscribe(on_receive, "meshtastic.receive")
