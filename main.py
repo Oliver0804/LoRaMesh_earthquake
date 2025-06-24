@@ -372,6 +372,7 @@ def get_weather_info_for_llm(query, cwa_client):
     """
     從用戶查詢中提取地名並獲取天氣資訊
     返回格式化的天氣資訊字串，用於LLM處理
+    現在使用 get_detailed_weather_for_llm 獲取更完整的天氣資訊
     """
     try:
         # 尋找查詢中的城市名稱（優先匹配較長的名稱）
@@ -392,53 +393,26 @@ def get_weather_info_for_llm(query, cwa_client):
         
         print(f"{Fore.CYAN}檢測到城市: {detected_city} -> {detected_full_name}{Style.RESET_ALL}")
         
-        # 使用完整縣市名稱調用CWA API
-        weather_data = cwa_client.get_city_weather(detected_full_name)
+        # 使用 get_detailed_weather_for_llm 獲取詳細天氣資訊
+        detailed_weather = cwa_client.get_detailed_weather_for_llm(detected_full_name)
         
-        if weather_data.get('success') != 'true':
-            return f"無法獲取 {detected_full_name} 的天氣資料，請稍後再試。"
-        
-        # 解析天氣資料
-        locations = weather_data.get('records', {}).get('location', [])
-        if not locations:
-            return f"沒有找到 {detected_full_name} 的天氣資料。"
-        
-        location_data = locations[0]
-        weather_elements = location_data.get('weatherElement', [])
-        
-        # 提取主要天氣資訊
-        weather_info = {}
-        for element in weather_elements:
-            element_name = element.get('elementName')
-            if element_name in ['Wx', 'PoP', 'MinT', 'MaxT']:  # 天氣現象、降雨機率、最低溫、最高溫
-                time_periods = element.get('time', [])
-                if time_periods:
-                    # 取第一個時間段的資料
-                    first_period = time_periods[0]
-                    parameter = first_period.get('parameter', {})
-                    weather_info[element_name] = parameter.get('parameterName', parameter.get('parameterValue', ''))
-        
-        # 格式化天氣資訊給LLM
-        weather_summary = f"{detected_city}天氣資訊：\n"
-        if 'Wx' in weather_info:
-            weather_summary += f"天氣狀況：{weather_info['Wx']}\n"
-        if 'MinT' in weather_info and 'MaxT' in weather_info:
-            weather_summary += f"溫度：{weather_info['MinT']}°C - {weather_info['MaxT']}°C\n"
-        if 'PoP' in weather_info:
-            weather_summary += f"降雨機率：{weather_info['PoP']}%\n"
-        
-        return weather_summary.strip()
+        return detailed_weather
         
     except Exception as e:
         logging.error(f"Error getting weather info for LLM: {str(e)}")
         return f"獲取天氣資訊時發生錯誤：{str(e)}"
 
-def get_earthquake_info_for_llm(cwa_client):
+def get_earthquake_info_for_llm(cwa_client, max_display: int = 5):
     """
     獲取最新地震資訊，返回格式化的地震資訊字串，用於LLM處理
+    現在會獲取最近10筆地震資料，並顯示前幾筆的詳細資訊
+    
+    Args:
+        cwa_client: CWA API 客戶端
+        max_display: 最多顯示幾筆地震的詳細資訊 (預設5筆)
     """
     try:
-        earthquake_data = cwa_client.get_latest_earthquake(count=1)
+        earthquake_data = cwa_client.get_latest_earthquake()  # 現在預設獲取10筆
         
         if earthquake_data.get('success') != 'true':
             return "無法獲取最新地震資料，請稍後再試。"
@@ -447,41 +421,81 @@ def get_earthquake_info_for_llm(cwa_client):
         if not earthquakes:
             return "目前沒有地震資料。"
         
-        eq = earthquakes[0]
-        eq_info = eq.get('EarthquakeInfo', {})
+        # 格式化地震資訊
+        earthquake_summary = f"🌍 最新地震資訊（共{len(earthquakes)}筆資料）：\n\n"
         
-        # 提取地震資訊
-        origin_time = eq_info.get('OriginTime', '未知時間')
-        magnitude = eq_info.get('EarthquakeMagnitude', {}).get('MagnitudeValue', '未知')
-        location = eq_info.get('Epicenter', {}).get('Location', '未知位置')
-        depth = eq_info.get('FocalDepth', '未知')
-        report_content = eq.get('ReportContent', '無詳細報告')
+        # 顯示前 max_display 筆地震的詳細資訊
+        display_count = min(max_display, len(earthquakes))
         
-        # 找出最大震度
-        max_intensity = '未知'
-        shaking_areas = eq.get('Intensity', {}).get('ShakingArea', [])
-        if shaking_areas:
-            max_intensity_value = 0
-            for area in shaking_areas:
-                area_intensity = area.get('AreaIntensity', '0級')
-                try:
-                    intensity_num = int(area_intensity.replace('級', ''))
-                    if intensity_num > max_intensity_value:
-                        max_intensity_value = intensity_num
-                        max_intensity = area_intensity
-                except:
-                    pass
+        for i, eq in enumerate(earthquakes[:display_count]):
+            eq_info = eq.get('EarthquakeInfo', {})
+            
+            # 提取地震資訊
+            origin_time = eq_info.get('OriginTime', '未知時間')
+            magnitude = eq_info.get('EarthquakeMagnitude', {}).get('MagnitudeValue', '未知')
+            location = eq_info.get('Epicenter', {}).get('Location', '未知位置')
+            depth = eq_info.get('FocalDepth', '未知')
+            report_content = eq.get('ReportContent', '無詳細報告')
+            
+            # 找出最大震度
+            max_intensity = '未知'
+            shaking_areas = eq.get('Intensity', {}).get('ShakingArea', [])
+            if shaking_areas:
+                max_intensity_value = 0
+                for area in shaking_areas:
+                    area_intensity = area.get('AreaIntensity', '0級')
+                    try:
+                        intensity_num = int(area_intensity.replace('級', ''))
+                        if intensity_num > max_intensity_value:
+                            max_intensity_value = intensity_num
+                            max_intensity = area_intensity
+                    except:
+                        pass
+            
+            # 格式化單筆地震資訊
+            if i == 0:
+                earthquake_summary += f"📍 第{i+1}筆（最新）：\n"
+            else:
+                earthquake_summary += f"� 第{i+1}筆：\n"
+            
+            earthquake_summary += f"  �📅 發生時間：{origin_time}\n"
+            earthquake_summary += f"  📍 震央位置：{location}\n"
+            earthquake_summary += f"  📊 地震規模：M{magnitude}\n"
+            earthquake_summary += f"  📏 震源深度：{depth}公里\n"
+            earthquake_summary += f"  🎯 最大震度：{max_intensity}\n"
+            earthquake_summary += f"  📝 說明：{report_content}\n\n"
         
-        # 格式化地震資訊給LLM
-        earthquake_summary = f"最新地震資訊：\n"
-        earthquake_summary += f"發生時間：{origin_time}\n"
-        earthquake_summary += f"震央位置：{location}\n"
-        earthquake_summary += f"地震規模：{magnitude}\n"
-        earthquake_summary += f"震源深度：{depth}公里\n"
-        earthquake_summary += f"最大震度：{max_intensity}\n"
-        earthquake_summary += f"說明：{report_content}"
+        # 如果還有更多地震資料未顯示
+        if len(earthquakes) > display_count:
+            earthquake_summary += f"... 還有{len(earthquakes) - display_count}筆地震資料\n\n"
         
-        return earthquake_summary
+        # 提供整體統計
+        earthquake_summary += f"📈 整體統計（最近{len(earthquakes)}筆）：\n"
+        
+        magnitude_4_plus = 0
+        magnitude_5_plus = 0
+        magnitude_6_plus = 0
+        
+        for eq in earthquakes:
+            eq_mag = eq.get('EarthquakeInfo', {}).get('EarthquakeMagnitude', {}).get('MagnitudeValue', '0')
+            try:
+                mag_value = float(eq_mag)
+                if mag_value >= 4.0:
+                    magnitude_4_plus += 1
+                if mag_value >= 5.0:
+                    magnitude_5_plus += 1
+                if mag_value >= 6.0:
+                    magnitude_6_plus += 1
+            except:
+                pass
+        
+        earthquake_summary += f"• 規模4.0以上：{magnitude_4_plus}次\n"
+        if magnitude_5_plus > 0:
+            earthquake_summary += f"• 規模5.0以上：{magnitude_5_plus}次\n"
+        if magnitude_6_plus > 0:
+            earthquake_summary += f"• 規模6.0以上：{magnitude_6_plus}次\n"
+        
+        return earthquake_summary.strip()
         
     except Exception as e:
         logging.error(f"Error getting earthquake info for LLM: {str(e)}")
