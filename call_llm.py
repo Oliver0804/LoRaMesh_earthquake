@@ -89,7 +89,9 @@ def get_recent_queries(count=10):
         print(f"讀取日誌時發生錯誤: {e}")
         return []
 
-def generate_response(prompt, max_length=160, model="meta-llama/llama-4-scout:free"):
+def generate_response(prompt, max_length=160, model="google/gemma-3-27b-it:free"):
+
+#def generate_response(prompt, max_length=160, model="meta-llama/llama-4-scout:free"):
     """
     使用語言模型生成對問題的回應，並限制回應長度
     
@@ -322,7 +324,9 @@ def generate_response(prompt, max_length=160, model="meta-llama/llama-4-scout:fr
         print(f"生成回應時發生錯誤: {e}")
         # 記錄失敗的API查詢
         save_query_log(prompt, error_message, model, status="失敗")
-        return error_message
+        # 無法回應時要用別的句子
+        message = "抱歉，我沒有聽清楚～請再說一遍。"
+        return message
 
 # 直接執行時的測試代碼
 if __name__ == "__main__":

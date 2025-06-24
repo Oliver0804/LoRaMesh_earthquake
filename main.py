@@ -14,9 +14,48 @@ import meshtastic.serial_interface
 from pubsub import pub
 import threading
 from flask import Flask
-# 確保路徑正確以便導入call_llm模組
+# 確保路徑正確以便導入call_llm模組和CWA客戶端
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# 導入CWA客戶端
+from cwa_client import CWAClient
+
+# 城市名稱到縣市的映射表（用於天氣查詢）
+CITY_MAPPING = {
+    # 縣市全名
+    '宜蘭縣': '001', '臺北市': '061', '新北市': '069', '桃園市': '005',
+    '新竹市': '053', '新竹縣': '009', '苗栗縣': '013', '臺中市': '073',
+    '彰化縣': '017', '南投縣': '021', '雲林縣': '025', '嘉義市': '057',
+    '嘉義縣': '029', '臺南市': '077', '高雄市': '065', '屏東縣': '033',
+    '臺東縣': '037', '花蓮縣': '041', '澎湖縣': '045', '基隆市': '049',
+    '金門縣': '085', '連江縣': '081',
+    # 簡化地名映射
+    '宜蘭': '001', '臺北': '061', '台北': '061', '新北': '069', '桃園': '005',
+    '新竹': '053', '新竹市': '053', '新竹縣': '009', '苗栗': '013', 
+    '臺中': '073', '台中': '073', '彰化': '017', '南投': '021', '雲林': '025',
+    '嘉義': '057', '嘉義市': '057', '嘉義縣': '029', '臺南': '077', '台南': '077',
+    '高雄': '065', '屏東': '033', '臺東': '037', '台東': '037', '花蓮': '041',
+    '澎湖': '045', '基隆': '049', '金門': '085', '連江': '081', '馬祖': '081'
+}
+
+# 簡化地名到完整縣市名稱的映射（用於CWA API調用）
+CITY_TO_FULL_NAME = {
+    '宜蘭': '宜蘭縣', '臺北': '臺北市', '台北': '臺北市', '新北': '新北市', 
+    '桃園': '桃園市', '新竹': '新竹縣', '新竹市': '新竹市', '苗栗': '苗栗縣',
+    '臺中': '臺中市', '台中': '臺中市', '彰化': '彰化縣', '南投': '南投縣',
+    '雲林': '雲林縣', '嘉義': '嘉義縣', '嘉義市': '嘉義市', '臺南': '臺南市',
+    '台南': '臺南市', '高雄': '高雄市', '屏東': '屏東縣', '臺東': '臺東縣',
+    '台東': '臺東縣', '花蓮': '花蓮縣', '澎湖': '澎湖縣', '基隆': '基隆市',
+    '金門': '金門縣', '連江': '連江縣', '馬祖': '連江縣',
+    # 已經是完整名稱的直接對應
+    '宜蘭縣': '宜蘭縣', '臺北市': '臺北市', '新北市': '新北市', '桃園市': '桃園市',
+    '新竹市': '新竹市', '新竹縣': '新竹縣', '苗栗縣': '苗栗縣', '臺中市': '臺中市',
+    '彰化縣': '彰化縣', '南投縣': '南投縣', '雲林縣': '雲林縣', '嘉義市': '嘉義市',
+    '嘉義縣': '嘉義縣', '臺南市': '臺南市', '高雄市': '高雄市', '屏東縣': '屏東縣',
+    '臺東縣': '臺東縣', '花蓮縣': '花蓮縣', '澎湖縣': '澎湖縣', '基隆市': '基隆市',
+    '金門縣': '金門縣', '連江縣': '連江縣'
+}
 
 debugMode = True
 
@@ -329,6 +368,125 @@ def parse_weather_data(records):
     print(f"\nTotal data entries processed: {len(forecast_summary)}")
     return forecast_summary
 
+def get_weather_info_for_llm(query, cwa_client):
+    """
+    從用戶查詢中提取地名並獲取天氣資訊
+    返回格式化的天氣資訊字串，用於LLM處理
+    """
+    try:
+        # 尋找查詢中的城市名稱（優先匹配較長的名稱）
+        detected_city = None
+        detected_full_name = None
+        
+        # 按長度排序，優先匹配較長的城市名稱
+        sorted_cities = sorted(CITY_TO_FULL_NAME.keys(), key=len, reverse=True)
+        
+        for city_name in sorted_cities:
+            if city_name in query:
+                detected_city = city_name
+                detected_full_name = CITY_TO_FULL_NAME[city_name]
+                break
+        
+        if not detected_city:
+            return "無法識別您查詢的城市，請提供具體的縣市名稱，例如：臺北、高雄、花蓮等。"
+        
+        print(f"{Fore.CYAN}檢測到城市: {detected_city} -> {detected_full_name}{Style.RESET_ALL}")
+        
+        # 使用完整縣市名稱調用CWA API
+        weather_data = cwa_client.get_city_weather(detected_full_name)
+        
+        if weather_data.get('success') != 'true':
+            return f"無法獲取 {detected_full_name} 的天氣資料，請稍後再試。"
+        
+        # 解析天氣資料
+        locations = weather_data.get('records', {}).get('location', [])
+        if not locations:
+            return f"沒有找到 {detected_full_name} 的天氣資料。"
+        
+        location_data = locations[0]
+        weather_elements = location_data.get('weatherElement', [])
+        
+        # 提取主要天氣資訊
+        weather_info = {}
+        for element in weather_elements:
+            element_name = element.get('elementName')
+            if element_name in ['Wx', 'PoP', 'MinT', 'MaxT']:  # 天氣現象、降雨機率、最低溫、最高溫
+                time_periods = element.get('time', [])
+                if time_periods:
+                    # 取第一個時間段的資料
+                    first_period = time_periods[0]
+                    parameter = first_period.get('parameter', {})
+                    weather_info[element_name] = parameter.get('parameterName', parameter.get('parameterValue', ''))
+        
+        # 格式化天氣資訊給LLM
+        weather_summary = f"{detected_city}天氣資訊：\n"
+        if 'Wx' in weather_info:
+            weather_summary += f"天氣狀況：{weather_info['Wx']}\n"
+        if 'MinT' in weather_info and 'MaxT' in weather_info:
+            weather_summary += f"溫度：{weather_info['MinT']}°C - {weather_info['MaxT']}°C\n"
+        if 'PoP' in weather_info:
+            weather_summary += f"降雨機率：{weather_info['PoP']}%\n"
+        
+        return weather_summary.strip()
+        
+    except Exception as e:
+        logging.error(f"Error getting weather info for LLM: {str(e)}")
+        return f"獲取天氣資訊時發生錯誤：{str(e)}"
+
+def get_earthquake_info_for_llm(cwa_client):
+    """
+    獲取最新地震資訊，返回格式化的地震資訊字串，用於LLM處理
+    """
+    try:
+        earthquake_data = cwa_client.get_latest_earthquake(count=1)
+        
+        if earthquake_data.get('success') != 'true':
+            return "無法獲取最新地震資料，請稍後再試。"
+        
+        earthquakes = earthquake_data.get('records', {}).get('Earthquake', [])
+        if not earthquakes:
+            return "目前沒有地震資料。"
+        
+        eq = earthquakes[0]
+        eq_info = eq.get('EarthquakeInfo', {})
+        
+        # 提取地震資訊
+        origin_time = eq_info.get('OriginTime', '未知時間')
+        magnitude = eq_info.get('EarthquakeMagnitude', {}).get('MagnitudeValue', '未知')
+        location = eq_info.get('Epicenter', {}).get('Location', '未知位置')
+        depth = eq_info.get('FocalDepth', '未知')
+        report_content = eq.get('ReportContent', '無詳細報告')
+        
+        # 找出最大震度
+        max_intensity = '未知'
+        shaking_areas = eq.get('Intensity', {}).get('ShakingArea', [])
+        if shaking_areas:
+            max_intensity_value = 0
+            for area in shaking_areas:
+                area_intensity = area.get('AreaIntensity', '0級')
+                try:
+                    intensity_num = int(area_intensity.replace('級', ''))
+                    if intensity_num > max_intensity_value:
+                        max_intensity_value = intensity_num
+                        max_intensity = area_intensity
+                except:
+                    pass
+        
+        # 格式化地震資訊給LLM
+        earthquake_summary = f"最新地震資訊：\n"
+        earthquake_summary += f"發生時間：{origin_time}\n"
+        earthquake_summary += f"震央位置：{location}\n"
+        earthquake_summary += f"地震規模：{magnitude}\n"
+        earthquake_summary += f"震源深度：{depth}公里\n"
+        earthquake_summary += f"最大震度：{max_intensity}\n"
+        earthquake_summary += f"說明：{report_content}"
+        
+        return earthquake_summary
+        
+    except Exception as e:
+        logging.error(f"Error getting earthquake info for LLM: {str(e)}")
+        return f"獲取地震資訊時發生錯誤：{str(e)}"
+
 # 定義接收訊息的回調函數
 def on_receive(packet, interface):
     """處理收到的 Meshtastic 訊息"""
@@ -424,8 +582,32 @@ def on_receive(packet, interface):
                         
                         print(f"{Fore.CYAN}處理查詢: '{actual_query}'{Style.RESET_ALL}")
                         
+                        # 檢查是否包含天氣或地震關鍵詞
+                        enhanced_prompt = actual_query
+                        
+                        # 初始化CWA客戶端（用於獲取天氣和地震資料）
+                        try:
+                            cwa_client = CWAClient()
+                        except Exception as cwa_error:
+                            print(f"{Fore.YELLOW}無法初始化CWA客戶端: {str(cwa_error)}{Style.RESET_ALL}")
+                            cwa_client = None
+                        
+                        # 檢查天氣查詢
+                        if '天氣' in actual_query and cwa_client:
+                            print(f"{Fore.CYAN}檢測到天氣查詢，正在獲取天氣資料...{Style.RESET_ALL}")
+                            weather_info = get_weather_info_for_llm(actual_query, cwa_client)
+                            enhanced_prompt = f"用戶查詢：{actual_query}\n\n相關天氣資料：\n{weather_info}\n\n請根據以上天氣資料回答用戶的問題。"
+                            print(f"{Fore.CYAN}已獲取天氣資料，準備LLM處理{Style.RESET_ALL}")
+                        
+                        # 檢查地震查詢
+                        elif '地震' in actual_query and cwa_client:
+                            print(f"{Fore.CYAN}檢測到地震查詢，正在獲取地震資料...{Style.RESET_ALL}")
+                            earthquake_info = get_earthquake_info_for_llm(cwa_client)
+                            enhanced_prompt = f"用戶查詢：{actual_query}\n\n最新地震資料：\n{earthquake_info}\n\n請根據以上地震資料回答用戶的問題。"
+                            print(f"{Fore.CYAN}已獲取地震資料，準備LLM處理{Style.RESET_ALL}")
+                        
                         # 生成LLM回應，限制在66字以內
-                        llm_response = generate_response(actual_query, max_length=66)
+                        llm_response = generate_response(enhanced_prompt, max_length=66)
                         print(f"{Fore.CYAN}LLM回應: {llm_response}{Style.RESET_ALL}")
                         
                         # 發送LLM回應
@@ -446,7 +628,7 @@ def on_receive(packet, interface):
                     else:
                         print(f"{Fore.YELLOW}@bashcat後沒有實際內容，跳過LLM處理{Style.RESET_ALL}")
                         if interface is not None:
-                            interface.sendText("您好，請在@bashcat後輸入您的問題，例如「@bashcat 什麼是地震？」", channelIndex=channel)
+                            interface.sendText("您好，請在@bashcat後輸入您的問題，例如「@bashcat 臺北天氣如何？」或「@bashcat 最近有地震嗎？」", channelIndex=channel)
                 except Exception as query_error:
                     error_msg = f"處理@bashcat查詢時出錯: {str(query_error)}"
                     print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
