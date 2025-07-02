@@ -606,8 +606,11 @@ def on_receive(packet, interface):
                             print(f"{Fore.YELLOW}無法初始化CWA客戶端: {str(cwa_error)}{Style.RESET_ALL}")
                             cwa_client = None
                         
-                        # 檢查天氣查詢
-                        if '天氣' in actual_query and cwa_client:
+                        # 檢查天氣查詢 - 擴展關鍵詞列表
+                        weather_keywords = ['天氣', '會下雨', '溫度', '降雨', '氣溫', '濕度', '降水', '颱風', 
+                                           '陰雨', '晴天', '陰天', '多雲', '氣象', '紫外線', '日曬', '雷雨']
+                                           
+                        if any(keyword in actual_query for keyword in weather_keywords) and cwa_client:
                             print(f"{Fore.CYAN}檢測到天氣查詢，正在獲取天氣資料...{Style.RESET_ALL}")
                             weather_info = get_weather_info_for_llm(actual_query, cwa_client)
                             enhanced_prompt = f"用戶查詢：{actual_query}\n\n相關天氣資料：\n{weather_info}\n\n請根據以上天氣資料回答用戶的問題。"
